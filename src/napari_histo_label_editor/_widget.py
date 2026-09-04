@@ -165,21 +165,28 @@ class LabelEditorWidget(QWidget):
 
     def load_data(self):
         self.image_path = Path(self.image_line.text())
-        self.labels_path = Path(self.label_line.text())
         self.mapping_path = Path(self.mapping_line.text())
 
+        label_text = self.label_line.text().strip()
+        self.labels_path = Path(label_text) if label_text else None
+
         image = iio.imread(self.image_path)
-        labels = iio.imread(self.labels_path)
 
-        if labels.ndim != 2:
-            raise ValueError(f"Label image must be 2D. Got {labels.shape}")
+        if self.labels_path is not None:
+            labels = iio.imread(self.labels_path)
 
-        if image.shape[:2] != labels.shape:
-            raise ValueError(
-                f"Image and labels differ: {image.shape[:2]} vs {labels.shape}"
-            )
+            if labels.ndim != 2:
+                raise ValueError(f"Label image must be 2D. Got {labels.shape}")
 
-        labels = labels.astype(np.int32, copy=False)
+            if image.shape[:2] != labels.shape:
+                raise ValueError(
+                    f"Image and labels differ: {image.shape[:2]} vs {labels.shape}"
+                )
+
+            labels = labels.astype(np.int32, copy=False)
+        else:
+            labels = np.zeros(image.shape[:2], dtype=np.int32)
+
         self.class_map = self._read_class_map(self.mapping_path)
 
         self.viewer.layers.clear()
@@ -215,7 +222,10 @@ class LabelEditorWidget(QWidget):
 
         self._populate_class_buttons()
 
-        self.viewer.status = "Loaded multiclass label layer."
+        if self.labels_path is None:
+            self.viewer.status = "Loaded histology image with blank annotation layer."
+        else:
+            self.viewer.status = "Loaded multiclass label layer."
 
     def _populate_class_buttons(self):
         # Clear old buttons
@@ -385,15 +395,46 @@ class LabelEditorWidget(QWidget):
         self.viewer.status = "Undo complete."
 
     def save_labels(self):
-        if self.labels_path is None or self.labels_layer is None:
-            self.viewer.status = "No labels loaded."
+        if self.labels_layer is None or self.image_path is None:
+            self.viewer.status = "No annotation layer loaded."
             return
+
+        labels = np.asarray(
+            self.labels_layer.data
+        ).astype(np.int32)
+
+        # --------------------------------------------------------------
+        # Existing annotation image:
+        # save back to the same file
+        # --------------------------------------------------------------
+        if self.labels_path is not None:
+            output_path = self.labels_path
+
+        # --------------------------------------------------------------
+        # No input annotation:
+        # generate a new TIFF based on the histology filename
+        # --------------------------------------------------------------
+        else:
+            output_path = (
+                self.image_path.parent
+                / f"{self.image_path.stem}_labels.tif"
+            )
 
         try:
-            labels = np.asarray(self.labels_layer.data).astype(np.int32)
-            iio.imwrite(self.labels_path, labels)
+            iio.imwrite(output_path, labels)
+
         except Exception as e:
-            QMessageBox.critical(self, "Save failed", str(e))
+            QMessageBox.critical(
+                self,
+                "Save failed",
+                str(e),
+            )
             return
 
-        self.viewer.status = f"Saved labels to {self.labels_path}"
+        # Once we've created the file, treat it as the active label path.
+        self.labels_path = output_path
+        self.label_line.setText(str(output_path))
+
+        self.viewer.status = (
+            f"Saved annotations to {output_path}"
+        )
